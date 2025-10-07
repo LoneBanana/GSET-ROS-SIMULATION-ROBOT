@@ -1,0 +1,927 @@
+"""#!/usr/bin/env python3"""
+# import rospy
+# import math
+# import numpy as np
+# from sensor_msgs.msg import LaserScan
+# from geometry_msgs.msg import Twist, Point
+# from nav_msgs.msg import Odometry
+# from tf.transformations import euler_from_quaternion
+# from visualization_msgs.msg import Marker, MarkerArray
+# from std_msgs.msg import ColorRGBA
+
+# class Navigator:
+#     def __init__(self):
+#         rospy.init_node('dijkstra_navigator', anonymous=True)
+        
+#         # Parameters
+#         self.goal_x = rospy.get_param('~goal_x', 3.0)
+#         self.goal_y = rospy.get_param('~goal_y', 2.0)
+#         self.rotation_speed = 1.5  # rad/s
+#         self.distance_threshold = 0.1
+#         self.scan_processed = False
+#         self.is_rotating = False
+#         self.current_state = "INIT"  # INIT, ROTATING, PROCESSING_SCAN, MOVING
+        
+#         # Corner detection parameters
+#         self.min_corner_distance = 0  # meters (ignore closer points)
+#         self.max_corner_distance = 8   # meters (ignore farther points)
+#         self.peak_threshold = 0.2        # meters (minimum range difference for corner)
+#         self.window_size = 5              # smoothing window size
+        
+#         # Edge detection parameters
+#         self.min_edge_length = 1.0       # minimum edge length to consider (meters)
+#         self.edge_deviation_threshold = 0.1  # max deviation from straight line (meters)
+#         self.edge_waypoint_spacing = 0.5 # spacing between waypoints on edges (meters)
+        
+#         # Subscribers & Publishers
+#         self.lidar_sub = rospy.Subscriber('/scan', LaserScan, self.scan_callback)
+#         self.odom_sub = rospy.Subscriber('/odom', Odometry, self.odom_callback)
+#         self.cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+#         self.marker_pub = rospy.Publisher('/visualization_marker', MarkerArray, queue_size=10)
+        
+#         # Robot state
+#         self.current_pose = None
+#         self.start_pose = None
+#         self.corners = []
+#         self.edges = []  # New: store detected edges
+#         self.nodes = []
+#         self.target_node = None
+#         self.scan_angles = []
+#         self.scan_ranges = []
+#         # FIX: Store the pose where each scan was taken
+#         self.scan_pose = None
+        
+#         # Wait for initial pose
+#         rospy.loginfo("Waiting for initial pose...")
+#         while not rospy.is_shutdown() and self.current_pose is None:
+#             rospy.sleep(0.1)
+#         self.start_pose = self.current_pose
+#         self.start_yaw = self.start_pose[2]
+#         rospy.loginfo(f"Start position: {self.start_pose}")
+        
+#         # Step 1: Perform initial 360° scan
+#         self.current_state = "ROTATING"
+#         self.start_rotation()
+
+#     def start_rotation(self):
+#         """Start the 360-degree rotation for scanning"""
+#         self.is_rotating = True
+#         self.scan_processed = False
+#         self.rotation_start_time = rospy.Time.now()
+#         self.scan_angles = []
+#         self.scan_ranges = []
+#         # FIX: Record where the scan starts
+#         self.scan_pose = self.current_pose
+        
+#         twist = Twist()
+#         twist.angular.z = self.rotation_speed
+#         self.cmd_vel_pub.publish(twist)
+#         rospy.loginfo("Starting 360° scan rotation...")
+    
+#     def odom_callback(self, msg):
+#         """Update current robot pose from odometry."""
+#         x = msg.pose.pose.position.x
+#         y = msg.pose.pose.position.y
+#         orientation = msg.pose.pose.orientation
+#         _, _, yaw = euler_from_quaternion([orientation.x, orientation.y, orientation.z, orientation.w])
+#         self.current_pose = (x, y, yaw)
+        
+#         # Check if rotation should stop
+#         if self.current_state == "ROTATING":
+#             rotation_duration = (rospy.Time.now() - self.rotation_start_time).to_sec()
+#             if rotation_duration >= (2 * np.pi / self.rotation_speed):
+#                 twist = Twist()
+#                 self.cmd_vel_pub.publish(twist)
+#                 self.is_rotating = False
+#                 self.current_state = "PROCESSING_SCAN"
+#                 rospy.loginfo("360° scan complete. Ready to process scan.")
+    
+#     def detect_edges(self, ranges, angles):
+#         """Detect straight line segments (edges) in LiDAR data"""
+#         edges = []
+        
+#         # Filter valid data points
+#         valid_indices = np.where((ranges > self.min_corner_distance) & 
+#                                  (ranges < self.max_corner_distance))[0]
+#         if len(valid_indices) < 10:  # Need minimum points for edge detection
+#             return edges
+            
+#         valid_ranges = ranges[valid_indices]
+#         valid_angles = angles[valid_indices]
+        
+#         # Convert to Cartesian coordinates for line fitting
+#         x_points = valid_ranges * np.cos(valid_angles)
+#         y_points = valid_ranges * np.sin(valid_angles)
+        
+#         # Use sliding window to detect line segments
+#         window_size = 15  # Number of points to consider for line fitting
+        
+#         i = 0
+#         while i < len(valid_ranges) - window_size:
+#             # Extract window of points
+#             x_window = x_points[i:i+window_size]
+#             y_window = y_points[i:i+window_size]
+            
+#             # Fit line using least squares
+#             if len(x_window) < 3:
+#                 i += 1
+#                 continue
+                
+#             # Calculate line parameters (y = mx + b)
+#             try:
+#                 A = np.vstack([x_window, np.ones(len(x_window))]).T
+#                 m, b = np.linalg.lstsq(A, y_window, rcond=None)[0]
+                
+#                 # Calculate deviations from fitted line
+#                 line_y = m * x_window + b
+#                 deviations = np.abs(y_window - line_y)
+#                 max_deviation = np.max(deviations)
+                
+#                 # Check if points form a good line
+#                 if max_deviation < self.edge_deviation_threshold:
+#                     # Calculate edge length
+#                     edge_length = np.sqrt((x_window[-1] - x_window[0])**2 + 
+#                                         (y_window[-1] - y_window[0])**2)
+                    
+#                     if edge_length > self.min_edge_length:
+#                         # Store edge as start and end points with angles
+#                         start_angle = valid_angles[i]
+#                         end_angle = valid_angles[i + window_size - 1]
+#                         start_range = valid_ranges[i]
+#                         end_range = valid_ranges[i + window_size - 1]
+                        
+#                         edges.append({
+#                             'start_range': start_range,
+#                             'start_angle': start_angle,
+#                             'end_range': end_range,
+#                             'end_angle': end_angle,
+#                             'length': edge_length,
+#                             'slope': m,
+#                             'intercept': b
+#                         })
+                        
+#                         # Skip ahead to avoid overlapping edges
+#                         i += window_size // 2
+#                     else:
+#                         i += 1
+#                 else:
+#                     i += 1
+                    
+#             except np.linalg.LinAlgError:
+#                 i += 1
+                
+#         return edges
+#         """Detect corners by finding local maxima/minima in range profile"""
+#         # Preprocess data
+#         valid_indices = np.where((ranges > self.min_corner_distance) & 
+#                                  (ranges < self.max_corner_distance))[0]
+#         valid_ranges = ranges[valid_indices]
+#         valid_angles = angles[valid_indices]
+        
+#         # Apply smoothing
+#         smoothed_ranges = np.convolve(valid_ranges, np.ones(self.window_size)/self.window_size, mode='same')
+        
+#         # Find local maxima (convex corners) and minima (concave corners)
+#         corners = []
+#         for i in range(1, len(smoothed_ranges)-1):
+#             # Check for local maxima (convex corners)
+#             if (smoothed_ranges[i] > smoothed_ranges[i-1] + self.peak_threshold and
+#                 smoothed_ranges[i] > smoothed_ranges[i+1] + self.peak_threshold):
+#                 corners.append((valid_ranges[i], valid_angles[i], 'convex'))
+            
+#             # Check for local minima (concave corners/doors)
+#             elif (smoothed_ranges[i] < smoothed_ranges[i-1] - self.peak_threshold and
+#                   smoothed_ranges[i] < smoothed_ranges[i+1] - self.peak_threshold):
+#                 corners.append((valid_ranges[i], valid_angles[i], 'concave'))
+        
+#     def detect_corners(self, ranges, angles):
+#         """Detect corners by finding local maxima/minima in range profile"""
+#         # Preprocess data
+#         valid_indices = np.where((ranges > self.min_corner_distance) & 
+#                                  (ranges < self.max_corner_distance))[0]
+#         valid_ranges = ranges[valid_indices]
+#         valid_angles = angles[valid_indices]
+        
+#         # Apply smoothing
+#         smoothed_ranges = np.convolve(valid_ranges, np.ones(self.window_size)/self.window_size, mode='same')
+        
+#         # Find local maxima (convex corners) and minima (concave corners)
+#         corners = []
+#         for i in range(1, len(smoothed_ranges)-1):
+#             # Check for local maxima (convex corners)
+#             if (smoothed_ranges[i] > smoothed_ranges[i-1] + self.peak_threshold and
+#                 smoothed_ranges[i] > smoothed_ranges[i+1] + self.peak_threshold):
+#                 corners.append((valid_ranges[i], valid_angles[i], 'convex'))
+            
+#             # Check for local minima (concave corners/doors)
+#             elif (smoothed_ranges[i] < smoothed_ranges[i-1] - self.peak_threshold and
+#                   smoothed_ranges[i] < smoothed_ranges[i+1] - self.peak_threshold):
+#                 corners.append((valid_ranges[i], valid_angles[i], 'concave'))
+        
+#         return corners
+    
+#     def generate_edge_waypoints(self, edge):
+#         """Generate waypoints along a detected edge"""
+#         waypoints = []
+        
+#         # Calculate start and end points in Cartesian coordinates
+#         start_x = edge['start_range'] * np.cos(edge['start_angle'])
+#         start_y = edge['start_range'] * np.sin(edge['start_angle'])
+#         end_x = edge['end_range'] * np.cos(edge['end_angle'])
+#         end_y = edge['end_range'] * np.sin(edge['end_angle'])
+        
+#         # Calculate number of waypoints based on edge length and spacing
+#         num_waypoints = max(1, int(edge['length'] / self.edge_waypoint_spacing))
+        
+#         # Generate evenly spaced waypoints along the edge
+#         for i in range(1, num_waypoints):  # Skip start (0) and end (num_waypoints)
+#             t = i / num_waypoints  # Parameter from 0 to 1
+            
+#             # Interpolate along the edge
+#             wp_x = start_x + t * (end_x - start_x)
+#             wp_y = start_y + t * (end_y - start_y)
+            
+#             # Convert back to polar coordinates
+#             wp_range = np.sqrt(wp_x**2 + wp_y**2)
+#             wp_angle = np.arctan2(wp_y, wp_x)
+            
+#             waypoints.append((wp_range, wp_angle, 'edge'))
+            
+#         return waypoints
+    
+#     def scan_callback(self, scan_msg):
+#         """Process LiDAR data to detect corners and build navigation graph"""
+#         if self.current_state != "PROCESSING_SCAN" or self.scan_processed:
+#             return
+            
+#         rospy.loginfo("Processing scan data...")
+        
+#         # Convert LiDAR data to numpy arrays
+#         ranges = np.array(scan_msg.ranges)
+#         raw_angles = np.linspace(scan_msg.angle_min, scan_msg.angle_max, len(ranges))
+        
+#         # FIX: Use the pose where scan was taken, not initial start pose
+#         if self.scan_pose is None:
+#             rospy.logwarn("No scan pose recorded! Using current pose.")
+#             self.scan_pose = self.current_pose
+            
+#         # Transform angles to global frame using scan pose orientation
+#         angles = (raw_angles + self.scan_pose[2]) % (2 * np.pi)
+        
+#         # Detect corners using range profile analysis
+#         self.corners = self.detect_corners(ranges, angles)
+#         rospy.loginfo(f"Detected {len(self.corners)} corners")
+        
+#         # FIX: Generate graph nodes with correct coordinate transformation
+#         self.nodes = []
+#         for r, theta, corner_type in self.corners:
+#             new_r = r / 2.0
+#             # Convert to global coordinates using scan pose as reference
+#             global_x = self.scan_pose[0] + new_r * np.cos(theta)
+#             global_y = self.scan_pose[1] + new_r * np.sin(theta)
+#             self.nodes.append((global_x, global_y, corner_type))
+        
+#         # Add goal as final node (already in global coordinates)
+#         self.nodes.append((self.goal_x, self.goal_y, 'goal'))
+        
+#         # Visualize nodes
+#         self.visualize_nodes()
+        
+#         # Run Dijkstra and move to next node
+#         if len(self.nodes) > 1:  # Ensure we have at least 1 node + goal
+#             next_node_idx = self.run_dijkstra()
+#             self.target_node = self.nodes[next_node_idx]
+#             self.scan_processed = True
+#             self.current_state = "MOVING"
+#             rospy.loginfo(f"Moving to node: ({self.target_node[0]:.2f}, {self.target_node[1]:.2f})")
+#         else:
+#             rospy.logwarn("No valid nodes found! Re-scanning...")
+#             self.current_state = "ROTATING"
+#             self.start_rotation()
+    
+#     def run_dijkstra(self):
+#         """Run Dijkstra's algorithm to find closest node to goal."""
+#         goal = self.nodes[-1]
+#         goal_pos = (goal[0], goal[1])
+        
+#         min_dist = float('inf')
+#         next_node_idx = 0
+        
+#         for i, node in enumerate(self.nodes[:-1]):
+#             node_pos = (node[0], node[1])
+#             dist = np.linalg.norm(np.array(node_pos) - np.array(goal_pos))
+            
+#             # FIX: Calculate distance from current position for path length penalty
+#             current_to_node = np.linalg.norm(np.array(node_pos) - np.array(self.current_pose[:2]))
+#             weight = dist + 0.1 * current_to_node  # Penalize longer paths from current position
+            
+#             if weight < min_dist:
+#                 min_dist = weight
+#                 next_node_idx = i
+        
+#         rospy.loginfo(f"Next target: Node {next_node_idx} (Dist: {min_dist:.2f}m)")
+#         return next_node_idx
+    
+#     def move_to_node(self):
+#         """Move to target node using PID control"""
+#         if self.target_node is None or self.current_pose is None:
+#             rospy.logwarn("No target node or current pose. Cannot move.")
+#             return
+            
+#         # FIX: Target node is now in global coordinates (x, y, type)
+#         target_x, target_y, _ = self.target_node
+        
+#         # Calculate errors
+#         dx = target_x - self.current_pose[0]
+#         dy = target_y - self.current_pose[1]
+#         distance_error = math.sqrt(dx**2 + dy**2)
+        
+#         # Only move if we're not already at the target
+#         if distance_error > self.distance_threshold:
+#             # PID parameters
+#             Kp_linear = 0.5
+#             Kp_angular = 1.0
+            
+#             angle_error = math.atan2(dy, dx) - self.current_pose[2]
+#             angle_error = (angle_error + np.pi) % (2 * np.pi) - np.pi
+            
+#             # Generate control commands
+#             twist = Twist()
+#             twist.linear.x = min(Kp_linear * distance_error, 0.2)
+#             twist.angular.z = Kp_angular * angle_error
+#             self.cmd_vel_pub.publish(twist)
+#         else:
+#             # Reached the node
+#             twist = Twist()
+#             self.cmd_vel_pub.publish(twist)
+#             rospy.loginfo("Reached node. Starting next scan...")
+#             self.current_state = "ROTATING"
+#             self.start_rotation()
+    
+#     def main_loop(self):
+#         """Main control loop running at 10Hz"""
+#         rate = rospy.Rate(10)
+#         while not rospy.is_shutdown():
+#             if self.current_state == "MOVING":
+#                 self.move_to_node()
+#             rate.sleep()
+    
+#     def visualize_nodes(self):
+#         """Visualize graph nodes in RViz with color coding"""
+#         marker_array = MarkerArray()
+        
+#         # Clear previous markers
+#         clear_marker = Marker()
+#         clear_marker.header.frame_id = "odom"
+#         clear_marker.action = Marker.DELETEALL
+#         marker_array.markers.append(clear_marker)
+        
+#         # FIX: Node markers now use global coordinates directly
+#         for i, (x, y, corner_type) in enumerate(self.nodes[:-1]):
+#             marker = Marker()
+#             marker.header.frame_id = "odom"
+#             marker.header.stamp = rospy.Time.now()
+#             marker.type = Marker.SPHERE
+#             marker.id = i
+#             marker.scale.x = marker.scale.y = marker.scale.z = 0.2
+#             marker.lifetime = rospy.Duration(0)
+            
+#             # Color coding based on corner type
+#             if corner_type == 'convex':
+#                 marker.color = ColorRGBA(0, 1, 0, 1)  # Green
+#             elif corner_type == 'concave':
+#                 marker.color = ColorRGBA(1, 1, 0, 1)  # Yellow
+            
+#             # Use global coordinates directly
+#             marker.pose.position = Point(x, y, 0)
+#             marker_array.markers.append(marker)
+        
+#         # Add goal marker (red) - already in global coordinates
+#         goal_node = self.nodes[-1]
+#         goal_marker = Marker()
+#         goal_marker.header.frame_id = "odom"
+#         goal_marker.header.stamp = rospy.Time.now()
+#         goal_marker.type = Marker.SPHERE
+#         goal_marker.id = 100
+#         goal_marker.scale.x = goal_marker.scale.y = goal_marker.scale.z = 0.3
+#         goal_marker.color = ColorRGBA(1, 0, 0, 1)  # Red
+#         goal_marker.pose.position = Point(goal_node[0], goal_node[1], 0)
+#         marker_array.markers.append(goal_marker)
+        
+#         # Add current target marker (blue)
+#         if self.target_node:
+#             target_marker = Marker()
+#             target_marker.header.frame_id = "odom"
+#             target_marker.header.stamp = rospy.Time.now()
+#             target_marker.type = Marker.SPHERE
+#             target_marker.id = 200
+#             target_marker.scale.x = target_marker.scale.y = target_marker.scale.z = 0.25
+#             target_marker.color = ColorRGBA(0, 0, 1, 1)  # Blue
+#             target_marker.pose.position = Point(self.target_node[0], self.target_node[1], 0)
+#             marker_array.markers.append(target_marker)
+        
+#         self.marker_pub.publish(marker_array)
+
+# if __name__ == '__main__':
+#     try:
+#         navigator = Navigator()
+#         navigator.main_loop()
+#     except rospy.ROSInterruptException:
+#         pass
+
+
+#Original code that works (without corner detection) is above
+
+
+
+# #!/usr/bin/env python3
+# import rospy
+# import math
+# import numpy as np
+# from sensor_msgs.msg import LaserScan
+# from geometry_msgs.msg import Twist, Point
+# from nav_msgs.msg import Odometry
+# from tf.transformations import euler_from_quaternion
+# from visualization_msgs.msg import Marker, MarkerArray
+# from std_msgs.msg import ColorRGBA
+
+# class Navigator:
+#     def __init__(self):
+#         rospy.init_node('dijkstra_navigator', anonymous=True)
+        
+#         # Parameters
+#         self.goal_x = rospy.get_param('~goal_x', 3.0)
+#         self.goal_y = rospy.get_param('~goal_y', 2.0)
+#         self.rotation_speed = 1.5  # rad/s
+#         self.distance_threshold = 0.1
+#         self.scan_processed = False
+#         self.is_rotating = False
+#         self.current_state = "INIT"  # INIT, ROTATING, PROCESSING_SCAN, MOVING
+        
+#         # Corner detection parameters
+#         self.min_corner_distance = 0.5  # meters (ignore closer points)
+#         self.max_corner_distance = 8   # meters (ignore farther points)
+#         self.peak_threshold = 0.2        # meters (minimum range difference for corner)
+#         self.window_size = 5              # smoothing window size
+        
+#         # Path validation parameters
+#         self.path_check_tolerance = 0.1   # radians (±5.7 degrees)
+#         self.obstacle_safety_margin = 0.8 # require 80% of corner distance to be clear
+#         self.waypoint_safety_margin = 0.9 # waypoints must be 90% of obstacle distance
+#         self.min_clear_angle = 0.2        # minimum angular clearance around corners (radians)
+        
+#         # Edge detection parameters (kept for potential future use)
+#         self.min_edge_length = 1.0       # minimum edge length to consider (meters)
+#         self.edge_deviation_threshold = 0.1  # max deviation from straight line (meters)
+#         self.edge_waypoint_spacing = 0.5 # spacing between waypoints on edges (meters)
+        
+#         # Subscribers & Publishers
+#         self.lidar_sub = rospy.Subscriber('/scan', LaserScan, self.scan_callback)
+#         self.odom_sub = rospy.Subscriber('/odom', Odometry, self.odom_callback)
+#         self.cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+#         self.marker_pub = rospy.Publisher('/visualization_marker', MarkerArray, queue_size=10)
+        
+#         # Robot state
+#         self.current_pose = None
+#         self.start_pose = None
+#         self.corners = []
+#         self.accessible_corners = []  # New: store only accessible corners
+#         self.edges = []
+#         self.nodes = []
+#         self.target_node = None
+#         self.scan_angles = []
+#         self.scan_ranges = []
+#         self.scan_pose = None
+        
+#         # Store full scan data for path validation
+#         self.full_ranges = None
+#         self.full_angles = None
+        
+#         # Wait for initial pose
+#         rospy.loginfo("Waiting for initial pose...")
+#         while not rospy.is_shutdown() and self.current_pose is None:
+#             rospy.sleep(0.1)
+#         self.start_pose = self.current_pose
+#         self.start_yaw = self.start_pose[2]
+#         rospy.loginfo(f"Start position: {self.start_pose}")
+        
+#         # Step 1: Perform initial 360° scan
+#         self.current_state = "ROTATING"
+#         self.start_rotation()
+
+#     def start_rotation(self):
+#         """Start the 360-degree rotation for scanning"""
+#         self.is_rotating = True
+#         self.scan_processed = False
+#         self.rotation_start_time = rospy.Time.now()
+#         self.scan_angles = []
+#         self.scan_ranges = []
+#         self.scan_pose = self.current_pose
+        
+#         twist = Twist()
+#         twist.angular.z = self.rotation_speed
+#         self.cmd_vel_pub.publish(twist)
+#         rospy.loginfo("Starting 360° scan rotation...")
+    
+#     def odom_callback(self, msg):
+#         """Update current robot pose from odometry."""
+#         x = msg.pose.pose.position.x
+#         y = msg.pose.pose.position.y
+#         orientation = msg.pose.pose.orientation
+#         _, _, yaw = euler_from_quaternion([orientation.x, orientation.y, orientation.z, orientation.w])
+#         self.current_pose = (x, y, yaw)
+        
+#         # Check if rotation should stop
+#         if self.current_state == "ROTATING":
+#             rotation_duration = (rospy.Time.now() - self.rotation_start_time).to_sec()
+#             if rotation_duration >= (2 * np.pi / self.rotation_speed):
+#                 twist = Twist()
+#                 self.cmd_vel_pub.publish(twist)
+#                 self.is_rotating = False
+#                 self.current_state = "PROCESSING_SCAN"
+#                 rospy.loginfo("360° scan complete. Ready to process scan.")
+    
+#     def normalize_angle(self, angle):
+#         """Normalize angle to [-pi, pi] range"""
+#         return (angle + np.pi) % (2 * np.pi) - np.pi
+    
+#     def is_path_clear(self, target_angle, target_range, ranges, angles):
+#         """Check if path to detected corner is obstacle-free"""
+#         if ranges is None or angles is None or len(ranges) == 0:
+#             return False
+            
+#         # Normalize target angle
+#         target_angle = self.normalize_angle(target_angle)
+        
+#         # Create angular window around target direction
+#         angle_min = self.normalize_angle(target_angle - self.path_check_tolerance)
+#         angle_max = self.normalize_angle(target_angle + self.path_check_tolerance)
+        
+#         # Handle angle wrapping around ±π
+#         if angle_min > angle_max:  # Wrapping case
+#             angle_indices = np.where((angles >= angle_min) | (angles <= angle_max))[0]
+#         else:
+#             angle_indices = np.where((angles >= angle_min) & (angles <= angle_max))[0]
+        
+#         if len(angle_indices) == 0:
+#             rospy.logwarn(f"No LiDAR points found near angle {target_angle:.2f}")
+#             return False
+        
+#         # Check if any obstacle is closer than required distance
+#         path_ranges = ranges[angle_indices]
+#         valid_ranges = path_ranges[np.isfinite(path_ranges)]
+        
+#         if len(valid_ranges) == 0:
+#             return False
+            
+#         min_obstacle_distance = np.min(valid_ranges)
+#         required_clearance = target_range * self.obstacle_safety_margin
+        
+#         is_clear = min_obstacle_distance >= required_clearance
+        
+#         if not is_clear:
+#             rospy.loginfo(f"Path blocked: obstacle at {min_obstacle_distance:.2f}m, need {required_clearance:.2f}m")
+        
+#         return is_clear
+    
+#     def validate_waypoint(self, x, y, ranges, angles, scan_pose):
+#         """Check if a waypoint location is in free space"""
+#         if ranges is None or angles is None or len(ranges) == 0:
+#             return False
+            
+#         # Convert waypoint back to polar coordinates relative to scan pose
+#         dx = x - scan_pose[0]
+#         dy = y - scan_pose[1]
+#         wp_range = np.sqrt(dx**2 + dy**2)
+#         wp_angle = np.arctan2(dy, dx) - scan_pose[2]
+#         wp_angle = self.normalize_angle(wp_angle)
+        
+#         # Find nearest LiDAR measurements
+#         angle_diff = np.abs(angles - wp_angle)
+#         # Handle angle wrapping
+#         angle_diff = np.minimum(angle_diff, 2*np.pi - angle_diff)
+#         nearest_idx = np.argmin(angle_diff)
+        
+#         if not np.isfinite(ranges[nearest_idx]):
+#             return False
+            
+#         # Check if waypoint is closer than nearest obstacle with safety margin
+#         is_valid = wp_range < ranges[nearest_idx] * self.waypoint_safety_margin
+        
+#         if not is_valid:
+#             rospy.loginfo(f"Waypoint invalid: at {wp_range:.2f}m, obstacle at {ranges[nearest_idx]:.2f}m")
+        
+#         return is_valid
+    
+#     def has_angular_clearance(self, corner_angle, ranges, angles):
+#         """Check if corner has sufficient angular clearance (not in a narrow gap)"""
+#         if ranges is None or angles is None or len(ranges) == 0:
+#             return False
+            
+#         corner_angle = self.normalize_angle(corner_angle)
+        
+#         # Check clearance on both sides of the corner
+#         left_angle = self.normalize_angle(corner_angle - self.min_clear_angle)
+#         right_angle = self.normalize_angle(corner_angle + self.min_clear_angle)
+        
+#         # Find ranges at clearance angles
+#         left_diff = np.abs(angles - left_angle)
+#         left_diff = np.minimum(left_diff, 2*np.pi - left_diff)
+#         left_idx = np.argmin(left_diff)
+        
+#         right_diff = np.abs(angles - right_angle)
+#         right_diff = np.minimum(right_diff, 2*np.pi - right_diff)
+#         right_idx = np.argmin(right_diff)
+        
+#         if not (np.isfinite(ranges[left_idx]) and np.isfinite(ranges[right_idx])):
+#             return False
+            
+#         # Both sides should have reasonable clearance
+#         min_clearance = 1.0  # minimum 1 meter clearance
+#         has_clearance = (ranges[left_idx] > min_clearance and 
+#                         ranges[right_idx] > min_clearance)
+        
+#         return has_clearance
+
+#     def detect_corners(self, ranges, angles):
+#         """Detect corners by finding local maxima/minima in range profile"""
+#         # Preprocess data - filter out invalid readings
+#         valid_mask = np.isfinite(ranges) & (ranges > self.min_corner_distance) & (ranges < self.max_corner_distance)
+#         valid_indices = np.where(valid_mask)[0]
+        
+#         if len(valid_indices) < self.window_size * 2:
+#             rospy.logwarn("Insufficient valid LiDAR data for corner detection")
+#             return []
+            
+#         valid_ranges = ranges[valid_indices]
+#         valid_angles = angles[valid_indices]
+        
+#         # Apply smoothing
+#         if len(valid_ranges) < self.window_size:
+#             return []
+            
+#         smoothed_ranges = np.convolve(valid_ranges, np.ones(self.window_size)/self.window_size, mode='same')
+        
+#         # Find local maxima (convex corners) and minima (concave corners)
+#         corners = []
+#         for i in range(1, len(smoothed_ranges)-1):
+#             original_range = valid_ranges[i]
+#             corner_angle = valid_angles[i]
+            
+#             # Check for local maxima (convex corners)
+#             if (smoothed_ranges[i] > smoothed_ranges[i-1] + self.peak_threshold and
+#                 smoothed_ranges[i] > smoothed_ranges[i+1] + self.peak_threshold):
+                
+#                 # Validate this corner before adding
+#                 if self.is_corner_accessible(original_range, corner_angle, ranges, angles):
+#                     corners.append((original_range, corner_angle, 'convex'))
+#                 else:
+#                     rospy.loginfo(f"Filtered inaccessible convex corner at range {original_range:.2f}, angle {corner_angle:.2f}")
+            
+#             # Check for local minima (concave corners/doors)
+#             elif (smoothed_ranges[i] < smoothed_ranges[i-1] - self.peak_threshold and
+#                   smoothed_ranges[i] < smoothed_ranges[i+1] - self.peak_threshold):
+                
+#                 # Validate this corner before adding
+#                 if self.is_corner_accessible(original_range, corner_angle, ranges, angles):
+#                     corners.append((original_range, corner_angle, 'concave'))
+#                 else:
+#                     rospy.loginfo(f"Filtered inaccessible concave corner at range {original_range:.2f}, angle {corner_angle:.2f}")
+        
+#         rospy.loginfo(f"Found {len(corners)} accessible corners out of potential candidates")
+#         return corners
+    
+#     def is_corner_accessible(self, corner_range, corner_angle, ranges, angles):
+#         """Comprehensive accessibility check for a detected corner"""
+#         # Check 1: Is the path to the corner clear?
+#         if not self.is_path_clear(corner_angle, corner_range, ranges, angles):
+#             return False
+            
+#         # Check 2: Does the corner have sufficient angular clearance?
+#         if not self.has_angular_clearance(corner_angle, ranges, angles):
+#             return False
+            
+#         # Check 3: Is the corner in a reasonable location?
+#         if corner_range < self.min_corner_distance * 2:  # Too close
+#             return False
+            
+#         return True
+
+#     def scan_callback(self, scan_msg):
+#         """Process LiDAR data to detect corners and build navigation graph"""
+#         if self.current_state != "PROCESSING_SCAN" or self.scan_processed:
+#             return
+            
+#         rospy.loginfo("Processing scan data...")
+        
+#         # Convert LiDAR data to numpy arrays and handle invalid readings
+#         ranges = np.array(scan_msg.ranges)
+#         # Replace inf and invalid readings with max range
+#         ranges[~np.isfinite(ranges)] = scan_msg.range_max
+#         ranges[ranges <= 0] = scan_msg.range_max
+        
+#         raw_angles = np.linspace(scan_msg.angle_min, scan_msg.angle_max, len(ranges))
+        
+#         # Use the pose where scan was taken
+#         if self.scan_pose is None:
+#             rospy.logwarn("No scan pose recorded! Using current pose.")
+#             self.scan_pose = self.current_pose
+            
+#         # Transform angles to global frame using scan pose orientation
+#         angles = (raw_angles + self.scan_pose[2]) % (2 * np.pi)
+        
+#         # Store full scan data for validation
+#         self.full_ranges = ranges
+#         self.full_angles = angles
+        
+#         # Detect accessible corners using range profile analysis
+#         self.corners = self.detect_corners(ranges, angles)
+#         rospy.loginfo(f"Detected {len(self.corners)} accessible corners")
+        
+#         # Generate graph nodes with correct coordinate transformation and validation
+#         self.nodes = []
+#         for r, theta, corner_type in self.corners:
+#             # Place waypoint at reduced distance for safety
+#             waypoint_range = min(r * 0.7, r - 0.5)  # Either 70% of distance or 0.5m closer
+#             waypoint_range = max(waypoint_range, 0.5)  # But at least 0.5m away
+            
+#             # Convert to global coordinates using scan pose as reference
+#             global_x = self.scan_pose[0] + waypoint_range * np.cos(theta)
+#             global_y = self.scan_pose[1] + waypoint_range * np.sin(theta)
+            
+#             # Final validation of waypoint location
+#             if self.validate_waypoint(global_x, global_y, ranges, angles, self.scan_pose):
+#                 self.nodes.append((global_x, global_y, corner_type))
+#                 rospy.loginfo(f"Added validated waypoint at ({global_x:.2f}, {global_y:.2f})")
+#             else:
+#                 rospy.loginfo(f"Final validation failed for waypoint at ({global_x:.2f}, {global_y:.2f})")
+        
+#         # Add goal as final node (already in global coordinates)
+#         self.nodes.append((self.goal_x, self.goal_y, 'goal'))
+        
+#         # Visualize nodes
+#         self.visualize_nodes()
+        
+#         # Run pathfinding and move to next node
+#         if len(self.nodes) > 1:  # Ensure we have at least 1 waypoint + goal
+#             next_node_idx = self.run_dijkstra()
+#             if next_node_idx < len(self.nodes) - 1:  # Valid waypoint index
+#                 self.target_node = self.nodes[next_node_idx]
+#                 self.scan_processed = True
+#                 self.current_state = "MOVING"
+#                 rospy.loginfo(f"Moving to node: ({self.target_node[0]:.2f}, {self.target_node[1]:.2f})")
+#             else:
+#                 rospy.loginfo("No valid intermediate waypoints, moving directly to goal")
+#                 self.target_node = self.nodes[-1]  # Go directly to goal
+#                 self.scan_processed = True
+#                 self.current_state = "MOVING"
+#         else:
+#             rospy.logwarn("No valid nodes found! Re-scanning...")
+#             self.current_state = "ROTATING"
+#             self.start_rotation()
+    
+#     def run_dijkstra(self):
+#         """Run simplified pathfinding to find best next node toward goal."""
+#         goal = self.nodes[-1]
+#         goal_pos = (goal[0], goal[1])
+        
+#         min_weight = float('inf')
+#         next_node_idx = len(self.nodes) - 1  # Default to goal if no waypoints
+        
+#         for i, node in enumerate(self.nodes[:-1]):  # Exclude goal from candidates
+#             node_pos = (node[0], node[1])
+            
+#             # Distance from node to goal
+#             dist_to_goal = np.linalg.norm(np.array(node_pos) - np.array(goal_pos))
+            
+#             # Distance from current position to node
+#             current_to_node = np.linalg.norm(np.array(node_pos) - np.array(self.current_pose[:2]))
+            
+#             # Combined weight: prioritize nodes closer to goal, penalize distant nodes
+#             weight = dist_to_goal + 0.2 * current_to_node
+            
+#             if weight < min_weight:
+#                 min_weight = weight
+#                 next_node_idx = i
+        
+#         rospy.loginfo(f"Next target: Node {next_node_idx} (Weight: {min_weight:.2f})")
+#         return next_node_idx
+    
+#     def move_to_node(self):
+#         """Move to target node using PID control"""
+#         if self.target_node is None or self.current_pose is None:
+#             rospy.logwarn("No target node or current pose. Cannot move.")
+#             return
+            
+#         target_x, target_y, _ = self.target_node
+        
+#         # Calculate errors
+#         dx = target_x - self.current_pose[0]
+#         dy = target_y - self.current_pose[1]
+#         distance_error = math.sqrt(dx**2 + dy**2)
+        
+#         # Check if we've reached the goal
+#         goal_dx = self.goal_x - self.current_pose[0]
+#         goal_dy = self.goal_y - self.current_pose[1]
+#         goal_distance = math.sqrt(goal_dx**2 + goal_dy**2)
+        
+#         if goal_distance <= self.distance_threshold:
+#             twist = Twist()
+#             self.cmd_vel_pub.publish(twist)
+#             rospy.loginfo("🎉 GOAL REACHED! 🎉")
+#             return
+        
+#         # Move toward current target
+#         if distance_error > self.distance_threshold:
+#             # PID parameters
+#             Kp_linear = 0.5
+#             Kp_angular = 1.0
+            
+#             angle_error = math.atan2(dy, dx) - self.current_pose[2]
+#             angle_error = self.normalize_angle(angle_error)
+            
+#             # Generate control commands
+#             twist = Twist()
+#             twist.linear.x = min(Kp_linear * distance_error, 0.2)
+#             twist.angular.z = Kp_angular * angle_error
+#             self.cmd_vel_pub.publish(twist)
+#         else:
+#             # Reached the current waypoint
+#             twist = Twist()
+#             self.cmd_vel_pub.publish(twist)
+#             rospy.loginfo("Reached waypoint. Starting next scan...")
+#             self.current_state = "ROTATING"
+#             self.start_rotation()
+    
+#     def main_loop(self):
+#         """Main control loop running at 10Hz"""
+#         rate = rospy.Rate(10)
+#         while not rospy.is_shutdown():
+#             if self.current_state == "MOVING":
+#                 self.move_to_node()
+#             rate.sleep()
+    
+#     def visualize_nodes(self):
+#         """Visualize graph nodes in RViz with color coding"""
+#         marker_array = MarkerArray()
+        
+#         # Clear previous markers
+#         clear_marker = Marker()
+#         clear_marker.header.frame_id = "odom"
+#         clear_marker.action = Marker.DELETEALL
+#         marker_array.markers.append(clear_marker)
+        
+#         # Add validated waypoint markers
+#         for i, (x, y, corner_type) in enumerate(self.nodes[:-1]):
+#             marker = Marker()
+#             marker.header.frame_id = "odom"
+#             marker.header.stamp = rospy.Time.now()
+#             marker.type = Marker.SPHERE
+#             marker.id = i
+#             marker.scale.x = marker.scale.y = marker.scale.z = 0.2
+#             marker.lifetime = rospy.Duration(0)
+            
+#             # Color coding based on corner type
+#             if corner_type == 'convex':
+#                 marker.color = ColorRGBA(0, 1, 0, 1)  # Green
+#             elif corner_type == 'concave':
+#                 marker.color = ColorRGBA(1, 1, 0, 1)  # Yellow
+#             else:
+#                 marker.color = ColorRGBA(0.5, 0.5, 0.5, 1)  # Gray for unknown
+            
+#             marker.pose.position = Point(x, y, 0)
+#             marker_array.markers.append(marker)
+        
+#         # Add goal marker (red)
+#         if len(self.nodes) > 0:
+#             goal_node = self.nodes[-1]
+#             goal_marker = Marker()
+#             goal_marker.header.frame_id = "odom"
+#             goal_marker.header.stamp = rospy.Time.now()
+#             goal_marker.type = Marker.SPHERE
+#             goal_marker.id = 100
+#             goal_marker.scale.x = goal_marker.scale.y = goal_marker.scale.z = 0.3
+#             goal_marker.color = ColorRGBA(1, 0, 0, 1)  # Red
+#             goal_marker.pose.position = Point(goal_node[0], goal_node[1], 0)
+#             marker_array.markers.append(goal_marker)
+        
+#         # Add current target marker (blue)
+#         if self.target_node:
+#             target_marker = Marker()
+#             target_marker.header.frame_id = "odom"
+#             target_marker.header.stamp = rospy.Time.now()
+#             target_marker.type = Marker.SPHERE
+#             target_marker.id = 200
+#             target_marker.scale.x = target_marker.scale.y = target_marker.scale.z = 0.25
+#             target_marker.color = ColorRGBA(0, 0, 1, 1)  # Blue
+#             target_marker.pose.position = Point(self.target_node[0], self.target_node[1], 0)
+#             marker_array.markers.append(target_marker)
+        
+#         self.marker_pub.publish(marker_array)
+
+# if __name__ == '__main__':
+#     try:
+#         navigator = Navigator()
+#         navigator.main_loop()
+#     except rospy.ROSInterruptException:
+#         pass

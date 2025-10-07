@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- 1. Let us pick which TurtleBot3 model to spawn -->
+  <arg name="model" default="burger"/>  <!-- change to "waffle_pi" if you like -->
+
+  <!-- 2. Load the TurtleBot3 URDF via xacro -->
+  <param name="robot_description"
+       command="$(find xacro)/xacro $(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro"/>
+
+  <!-- 3. Launch Gazebo with a simple empty world (or swap in any world you like) -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name"
+         value="$(find rotational_testing)/worlds/simple_world.world"/>
+    <arg name="paused"      value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui"         value="true"/>
+    <arg name="headless"    value="false"/>
+    <arg name="debug"       value="false"/>
+  </include>
+
+  <!-- 4. Spawn the TurtleBot3 in Gazebo -->
+  <node name="spawn_turtlebot3" pkg="gazebo_ros" type="spawn_model"
+        args="-param robot_description
+              -urdf
+              -model turtlebot3_$(arg model)
+              -x 0 -y 0 -z 0.1"
+        output="screen"/>
+
+  <!-- 5. Standard state publishers for TF -->
+  <node name="robot_state_publisher"
+        pkg="robot_state_publisher"
+        type="robot_state_publisher"
+        output="screen"/>
+  <node name="joint_state_publisher"
+        pkg="joint_state_publisher"
+        type="joint_state_publisher"
+        output="screen"/>
+
+  <!-- 6. Your main ROS node (e.g. publishing commands, reading /scan, etc.) -->
+  <node name="rotational_testing_node"
+        pkg="rotational_testing"
+        type="main.py"
+        output="screen"/>
+
+  <!-- 7. Visualization node: draws lines for each LIDAR beam -->
+  <node name="lidar_line_viz"
+        pkg="rotational_testing"
+        type="main_viz.py"   
+        output="screen"/>
+<!-- make sure this is executable in your package -->
+  <!-- 8. (Optional) Launch RViz automatically so you can immediately add the Marker display -->
+  <node pkg="rviz" type="rviz" name="rviz" args="-d $(find rotational_testing)/rviz/lidar_vis.rviz"/>
+</launch>

@@ -1,0 +1,8 @@
+prefix=/home/lonebanana/lidar_testing/devel
+
+Name: rotational_testing
+Description: Description of rotational_testing
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: rospy roscpp std_msgs sensor_msgs geometry_msgs gazebo_ros xacro

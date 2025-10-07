@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Launch the navigation node -->
+    <node name="lidar_tracking" pkg="rotational_testing" type="new_pid_house_lidar_tracking.py" output="screen">
+        <param name="goal_x" value="3.0"/>
+        <param name="goal_y" value="3.0"/>
+    </node>
+
+    <!-- Launch the enhanced PID controller -->
+    <node name="enhanced_pid" pkg="rotational_testing" type="enhanced_pid.py" output="screen">
+        <param name="pid_distance" value="[0.8, 0.01, 0.15, 0.26]"/>
+        <param name="pid_yaw" value="[1.5, 0.005, 0.1, 1.5]"/>
+        <param name="max_linear_speed" value="0.22"/>
+        <param name="max_angular_speed" value="2.84"/>
+    </node>
+</launch>

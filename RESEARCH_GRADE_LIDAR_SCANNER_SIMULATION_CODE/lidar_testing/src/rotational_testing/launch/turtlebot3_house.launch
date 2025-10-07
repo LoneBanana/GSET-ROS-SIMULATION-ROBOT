@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- 1. Let us pick which TurtleBot3 model to spawn -->
+  <arg name="model" default="burger"/>  <!-- change to "waffle_pi" if you like -->
+
+  <!-- 2. Load the TurtleBot3 URDF via xacro -->
+  <param name="robot_description"
+       command="$(find xacro)/xacro $(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro"/>
+
+  <!-- 3. Launch Gazebo with a simple empty world (or swap in any world you like) -->
+  
+  <!-- If this does not work, try using $(find turtlebot3_gazebo) operator, followed by launch directory. Same applies to code below-->
+
+  <include file="$(find turtlebot3_gazebo)/launch/turtlebot3_house.launch"> 
+      <arg name="world_name"
+         value="$(find turtlebot3_gazebo)/worlds/turtlebot3_house.world"/>
+    <arg name="paused"      value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui"         value="true"/>
+    <arg name="headless"    value="false"/>
+    <arg name="debug"       value="false"/>
+  </include>
+
+  <!-- 5. Standard state publishers for TF -->
+  <node pkg="robot_state_publisher" type="robot_state_publisher" name="robot_state_publisher">
+  <param name="use_sim_time" value="true"/>
+</node>
+<node pkg="joint_state_publisher"  type="joint_state_publisher"  name="joint_state_publisher"/>
+
+  <!-- 6. Your main ROS node (e.g. publishing commands, reading /scan, etc.) -->
+  <node name="lidar_line_viz"
+        pkg="rotational_testing"
+        type="main.py"
+        output="screen"/>
+
+  <!-- 7. Visualization node: draws lines for each LIDAR beam -->
+  <node name="rotational_testing_viz"
+        pkg="rotational_testing"
+        type="main_viz.py"   
+        output="screen"/>
+<!-- make sure this is executable in your package -->
+  <!-- 8. (Optional) Launch RViz automatically so you can immediately add the Marker display -->
+  <node pkg="rviz" type="rviz" name="rviz" args="-d $(find rotational_testing)/rviz/default_config.rviz"/>
+  <!--Alternate path may be necessary to run the default code-->
+</launch>
